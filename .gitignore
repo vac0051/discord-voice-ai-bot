@@ -1,0 +1,30 @@
+# Node dependencies
+node_modules/
+
+# Python Virtual Environments
+venv_voice/
+venv/
+.venv/
+
+# Sensitive tokens
+.env
+
+# Large Vosk Models (should be downloaded manually to data/ folder)
+data/
+data/*
+vosk-model-*/
+
+# Temporary voice recordings and files
+user_*.wav
+user_*.pcm
+user_*_reply.mp3
+welcome.mp3
+*.log
+
+# System logs and caches
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
