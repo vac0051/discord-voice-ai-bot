@@ -188,7 +188,8 @@ function joinChannel(channel, textChan) {
                 return;
             }
             
-            const ffmpegProcess = spawn('ffmpeg', [
+            const ffmpegPath = require('ffmpeg-static');
+            const ffmpegProcess = spawn(ffmpegPath, [
                 '-y', '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', pcmPath,
                 '-f', 'wav', '-ar', '16000', '-ac', '1', pcmWavPath
             ]);
