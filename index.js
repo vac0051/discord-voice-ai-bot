@@ -200,43 +200,24 @@ function joinChannel(channel, textChan) {
                     pcmWavPath
                 ]);
             
-                pythonProcess.stdout.on('data', (data) => {
+                pythonProcess.stdout.on('data', async (data) => {
                     const lines = data.toString().split('\n');
+                    const debugChannel = client.channels.cache.get('1509215578622267444');
+                    
                     for (const line of lines) {
                         if (!line.trim()) continue;
+                        console.log(`[Python] ${line}`);
                         
                         if (line.startsWith('TEXT:')) {
                             const text = line.substring(5).trim();
-                            if (text && textChannel) textChannel.send(`🗣️ \`${userName}\`: ${text}`);
-                        } else if (line.startsWith('REPLY:')) {
-                            const reply = line.substring(6).trim();
-                            if (reply && textChannel) textChannel.send(`💬 **Алиса**: ${reply}`);
-                        } else if (line.startsWith('MP3:')) {
-                            // If distube is playing, maybe pause it or let it play alongside?
-                            // We will stop default player if distube is playing.
-                            // Actually distube handles its own voice connection. If we play a resource directly, we might override it or it overrides us.
-                            const mp3Path = line.substring(4).trim();
-                            const guild = client.guilds.cache.get(channel.guild.id);
-                            const queue = distube.getQueue(guild);
-                            
-                            if (queue && queue.playing) {
-                                // Just delete the MP3 if music is playing, or pause music, play, resume.
-                                // For simplicity, we just send text reply if music is playing.
-                                try { fs.unlinkSync(mp3Path); } catch(e){}
-                            } else {
-                                currentPlayingMp3 = mp3Path;
-                                const resource = createAudioResource(mp3Path);
-                                player.play(resource);
-                            }
+                            if (text && debugChannel) await debugChannel.send(`🗣️ \`${userName}\` сказал: ${text}`);
                         } else if (line.startsWith('MUSIC:')) {
                             const query = line.substring(6).trim();
                             if (query) {
-                                console.log(`[NodeBot] Голосовой запрос музыки: ${query}`);
+                                if (debugChannel) await debugChannel.send(`🎵 Распознана команда на музыку: ${query}`);
                                 const guild = client.guilds.cache.get(channel.guild.id);
                                 const member = guild.members.cache.get(userId);
                                 if (member && member.voice.channel) {
-                                    // Search soundcloud and play
-                                    // Make sure we stop AI TTS player first if playing
                                     player.stop();
                                     distube.play(member.voice.channel, query, {
                                         member: member,
@@ -244,8 +225,18 @@ function joinChannel(channel, textChan) {
                                     });
                                 }
                             }
+                        } else if (line.startsWith('IGNORING:')) {
+                            if (debugChannel) await debugChannel.send(`🛑 Игнорирую: ${line}`);
+                        } else if (line.startsWith('ERROR:')) {
+                            if (debugChannel) await debugChannel.send(`❌ Ошибка Python: ${line}`);
                         }
                     }
+                });
+                
+                pythonProcess.stderr.on('data', async (data) => {
+                    console.error(`[Python Stderr] ${data}`);
+                    const debugChannel = client.channels.cache.get('1509215578622267444');
+                    if (debugChannel) await debugChannel.send(`⚠️ Ошибка (stderr): ${data.toString().slice(0, 1900)}`);
                 });
                 
                 pythonProcess.on('close', () => {
