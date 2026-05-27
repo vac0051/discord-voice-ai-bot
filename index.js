@@ -16,7 +16,7 @@ if (dns.setDefaultResultOrder) {
     dns.setDefaultResultOrder('ipv4first');
 }
 
-const { Client, GatewayIntentBits, Events } = require('discord.js');
+const { Client, GatewayIntentBits, Events, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, EmbedBuilder } = require('discord.js');
 const { EndBehaviorType } = require('@discordjs/voice');
 const prism = require('prism-media');
 const { spawn } = require('child_process');
@@ -28,6 +28,7 @@ require('dotenv').config();
 // DisTube imports
 const { DisTube } = require('distube');
 const { SoundCloudPlugin } = require('@distube/soundcloud');
+const { YtDlpPlugin } = require('@distube/yt-dlp');
 
 const client = new Client({ 
     intents: [
@@ -42,18 +43,181 @@ const client = new Client({
 const ffmpegPath = require('ffmpeg-static');
 
 const distube = new DisTube(client, {
-    plugins: [new SoundCloudPlugin()],
+    plugins: [
+        new SoundCloudPlugin(),
+        new YtDlpPlugin()
+    ],
     emitNewSongOnly: true,
     ffmpeg: {
         path: ffmpegPath
     }
 });
 
+// Per-guild settings store
+const guildSettings = new Map();
+
+function getSettings(guildId) {
+    if (!guildSettings.has(guildId)) {
+        guildSettings.set(guildId, {
+            searchSource: 'sc', // default: sc (SoundCloud) or yt (YouTube)
+            autoplay: true,
+            debugLogs: true
+        });
+    }
+    return guildSettings.get(guildId);
+}
+
+function buildSettingsEmbed(guildId) {
+    const settings = getSettings(guildId);
+    return new EmbedBuilder()
+        .setTitle('🎙️ Настройки голосового помощника Алисы')
+        .setDescription('Здесь вы можете изменить источник поиска музыки, автовоспроизведение рекомендаций и логирование дебага.')
+        .setColor(0x9b59b6)
+        .addFields(
+            { name: '🔍 Источник поиска по тексту/голосу', value: settings.searchSource === 'yt' ? '🔴 **YouTube** (через yt-dlp)' : '🟠 **SoundCloud**', inline: true },
+            { name: '📻 Автоплей рекомендаций', value: settings.autoplay ? '🟢 **Включен** (авто-подбор треков)' : '🔴 **Выключен**', inline: true },
+            { name: '🛠️ Отправка дебаг логов в чат', value: settings.debugLogs ? '🟢 **Включена** (в канал `#debug`)' : '🔴 **Выключена**', inline: true }
+        )
+        .setFooter({ text: 'Алиса • Управление музыкой' });
+}
+
+function buildSettingsButtons(guildId) {
+    const settings = getSettings(guildId);
+    
+    const autoplayBtn = new ButtonBuilder()
+        .setCustomId(`toggle_autoplay_${guildId}`)
+        .setLabel(settings.autoplay ? '📻 Автоплей: Вкл' : '📻 Автоплей: Выкл')
+        .setStyle(settings.autoplay ? ButtonStyle.Success : ButtonStyle.Danger);
+        
+    const debugBtn = new ButtonBuilder()
+        .setCustomId(`toggle_debug_${guildId}`)
+        .setLabel(settings.debugLogs ? '🛠️ Дебаг Логи: Вкл' : '🛠️ Дебаг Логи: Выкл')
+        .setStyle(settings.debugLogs ? ButtonStyle.Success : ButtonStyle.Danger);
+
+    return new ActionRowBuilder().addComponents(autoplayBtn, debugBtn);
+}
+
+function buildSettingsSelect(guildId) {
+    const settings = getSettings(guildId);
+    
+    const select = new StringSelectMenuBuilder()
+        .setCustomId(`select_source_${guildId}`)
+        .setPlaceholder('Выберите источник поиска...')
+        .addOptions([
+            {
+                label: 'SoundCloud',
+                description: 'Поиск треков на платформе SoundCloud',
+                value: 'sc',
+                emoji: '🟠',
+                default: settings.searchSource === 'sc'
+            },
+            {
+                label: 'YouTube',
+                description: 'Поиск треков на платформе YouTube',
+                value: 'yt',
+                emoji: '🔴',
+                default: settings.searchSource === 'yt'
+            }
+        ]);
+        
+    return new ActionRowBuilder().addComponents(select);
+}
+
+// Unified play helper to handle SoundCloud and YouTube searches
+async function playTrack(guildId, voiceChannel, query, member, textChan) {
+    const settings = getSettings(guildId);
+    const isUrl = query.startsWith('http://') || query.startsWith('https://');
+    
+    if (isUrl) {
+        return distube.play(voiceChannel, query, {
+            member: member,
+            textChannel: textChan
+        });
+    }
+    
+    if (settings.searchSource === 'sc') {
+        const scPlugin = distube.plugins.find(p => p.constructor.name === 'SoundCloudPlugin');
+        if (scPlugin) {
+            if (textChan) textChan.send(`🔍 **[Алиса]** Ищу \`${query}\` на SoundCloud...`);
+            try {
+                const results = await scPlugin.search(query, 'track', 1);
+                if (results && results.length > 0) {
+                    return distube.play(voiceChannel, results[0], {
+                        member: member,
+                        textChannel: textChan
+                    });
+                } else {
+                    if (textChan) textChan.send(`❌ **[Алиса]** Ничего не найдено на SoundCloud по запросу \`${query}\`.`);
+                    return;
+                }
+            } catch (e) {
+                console.error(`[NodeBot] SoundCloud search error:`, e);
+            }
+        }
+    }
+    
+    if (textChan) textChan.send(`🔍 **[Алиса]** Ищу \`${query}\` на YouTube...`);
+    return distube.play(voiceChannel, query, {
+        member: member,
+        textChannel: textChan
+    });
+}
+
+// Register slash commands globally
+async function registerSlashCommands(token) {
+    try {
+        const clientId = Buffer.from(token.split('.')[0], 'base64').toString('utf-8');
+        console.log(`[NodeBot] Извлечен Client ID: ${clientId}`);
+        
+        const commandsList = [
+            new SlashCommandBuilder()
+                .setName('play')
+                .setDescription('Воспроизвести трек (по ссылке или названию)')
+                .addStringOption(option =>
+                    option.setName('query')
+                        .setDescription('Название песни или ссылка (YouTube/SoundCloud)')
+                        .setRequired(true)),
+            new SlashCommandBuilder()
+                .setName('skip')
+                .setDescription('Пропустить текущую песню'),
+            new SlashCommandBuilder()
+                .setName('stop')
+                .setDescription('Остановить музыку и очистить очередь'),
+            new SlashCommandBuilder()
+                .setName('pause')
+                .setDescription('Приостановить воспроизведение'),
+            new SlashCommandBuilder()
+                .setName('resume')
+                .setDescription('Возобновить воспроизведение'),
+            new SlashCommandBuilder()
+                .setName('join')
+                .setDescription('Подключить Алису к вашему голосовому каналу'),
+            new SlashCommandBuilder()
+                .setName('leave')
+                .setDescription('Отключить Алису от голосового канала'),
+            new SlashCommandBuilder()
+                .setName('settings')
+                .setDescription('Открыть интерактивное меню настроек Алисы')
+        ].map(command => command.toJSON());
+
+        const rest = new REST({ version: '10' }).setToken(token);
+        console.log('[NodeBot] Начало обновления глобальных (/)...');
+        await rest.put(
+            Routes.applicationCommands(clientId),
+            { body: commandsList },
+        );
+        console.log('[NodeBot] Успешно перезаписаны глобальные (/) команды.');
+    } catch (e) {
+        console.error('[NodeBot] Ошибка регистрации слэш-команд:', e);
+    }
+}
+
 let textChannel = null;
 const activeStreams = new Set();
 
-client.on(Events.ClientReady, () => {
+client.on(Events.ClientReady, async () => {
     console.log(`[NodeBot] Запущен как ${client.user.tag}!`);
+    await registerSlashCommands(process.env.DISCORD_TOKEN);
 });
 
 // DisTube events
@@ -184,6 +348,7 @@ async function joinChannel(channel, textChan) {
                 pythonProcess.stdout.on('data', async (data) => {
                     const lines = data.toString().split('\n');
                     const debugChannel = client.channels.cache.get('1509215578622267444');
+                    const settings = getSettings(channel.guild.id);
                     
                     for (const line of lines) {
                         if (!line.trim()) continue;
@@ -191,22 +356,19 @@ async function joinChannel(channel, textChan) {
                         
                         if (line.startsWith('TEXT:')) {
                             const text = line.substring(5).trim();
-                            if (text && debugChannel) await debugChannel.send(`🗣️ \`${userName}\` сказал: ${text}`);
+                            if (text && debugChannel && settings.debugLogs) await debugChannel.send(`🗣️ \`${userName}\` сказал: ${text}`);
                         } else if (line.startsWith('MUSIC:')) {
                             const query = line.substring(6).trim();
                             if (query) {
-                                if (debugChannel) await debugChannel.send(`🎵 Распознана команда на музыку: ${query}`);
+                                if (debugChannel && settings.debugLogs) await debugChannel.send(`🎵 Распознана команда на музыку: ${query}`);
                                 const guild = client.guilds.cache.get(channel.guild.id);
                                 const member = guild.members.cache.get(userId);
                                 if (member && member.voice.channel) {
-                                    distube.play(member.voice.channel, query, {
-                                        member: member,
-                                        textChannel: textChannel
-                                    });
+                                    playTrack(channel.guild.id, member.voice.channel, query, member, textChannel);
                                 }
                             }
                         } else if (line.startsWith('STOP:')) {
-                            if (debugChannel) await debugChannel.send(`🛑 Получена голосовая команда на выключение музыки`);
+                            if (debugChannel && settings.debugLogs) await debugChannel.send(`🛑 Получена голосовая команда на выключение музыки`);
                             try {
                                 const queue = distube.getQueue(channel.guild.id);
                                 if (queue) {
@@ -219,7 +381,7 @@ async function joinChannel(channel, textChan) {
                                 console.error(`[NodeBot] Ошибка остановки музыки по голосу:`, e);
                             }
                         } else if (line.startsWith('PAUSE:')) {
-                            if (debugChannel) await debugChannel.send(`⏸️ Получена голосовая команда на паузу`);
+                            if (debugChannel && settings.debugLogs) await debugChannel.send(`⏸️ Получена голосовая команда на паузу`);
                             try {
                                 const queue = distube.getQueue(channel.guild.id);
                                 if (queue && !queue.paused) {
@@ -230,7 +392,7 @@ async function joinChannel(channel, textChan) {
                                 console.error(`[NodeBot] Ошибка паузы по голосу:`, e);
                             }
                         } else if (line.startsWith('RESUME:')) {
-                            if (debugChannel) await debugChannel.send(`▶️ Получена голосовая команда на возобновление`);
+                            if (debugChannel && settings.debugLogs) await debugChannel.send(`▶️ Получена голосовая команда на возобновление`);
                             try {
                                 const queue = distube.getQueue(channel.guild.id);
                                 if (queue && queue.paused) {
@@ -241,7 +403,7 @@ async function joinChannel(channel, textChan) {
                                 console.error(`[NodeBot] Ошибка возобновления по голосу:`, e);
                             }
                         } else if (line.startsWith('SKIP:')) {
-                            if (debugChannel) await debugChannel.send(`⏭️ Получена голосовая команда на пропуск трека`);
+                            if (debugChannel && settings.debugLogs) await debugChannel.send(`⏭️ Получена голосовая команда на пропуск трека`);
                             try {
                                 const queue = distube.getQueue(channel.guild.id);
                                 if (queue) {
@@ -253,12 +415,14 @@ async function joinChannel(channel, textChan) {
                                 console.error(`[NodeBot] Ошибка пропуска по голосу:`, e);
                             }
                         } else if (line.startsWith('AUTOPLAY:')) {
-                            if (debugChannel) await debugChannel.send(`📻 Получена голосовая команда на автоплей`);
+                            if (debugChannel && settings.debugLogs) await debugChannel.send(`📻 Получена голосовая команда на автоплей`);
                             try {
                                 const queue = distube.getQueue(channel.guild.id);
                                 if (queue) {
-                                    const autoplay = queue.toggleAutoplay();
-                                    if (textChannel) await textChannel.send(`📻 **[Алиса]** Автовоспроизведение рекомендаций теперь **${autoplay ? 'ВКЛЮЧЕНО' : 'ВЫКЛЮЧЕНО'}**.`);
+                                    // Toggle Autoplay both in settings and queue
+                                    settings.autoplay = !settings.autoplay;
+                                    queue.autoplay = settings.autoplay;
+                                    if (textChannel) await textChannel.send(`📻 **[Алиса]** Автовоспроизведение рекомендаций теперь **${settings.autoplay ? 'ВКЛЮЧЕНО' : 'ВЫКЛЮЧЕНО'}**.`);
                                 }
                             } catch (e) {
                                 console.error(`[NodeBot] Ошибка переключения автоплея по голосу:`, e);
@@ -313,11 +477,7 @@ client.on(Events.MessageCreate, async message => {
             // Подключаемся к голосовому каналу и настраиваем слушатель речи
             await joinChannel(voiceChannel, message.channel);
             
-            await distube.play(voiceChannel, query, {
-                message,
-                textChannel: message.channel,
-                member: message.member,
-            });
+            await playTrack(message.guild.id, voiceChannel, query, message.member, message.channel);
         } catch (e) {
             console.error(e);
             message.reply(`Ошибка: ${e.message}`);
@@ -438,6 +598,175 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
                     }
                 }
             }
+        }
+    }
+});
+
+// Slash command and interactive settings menu handler
+client.on(Events.InteractionCreate, async interaction => {
+    const { guildId, guild, member, channel } = interaction;
+    
+    if (interaction.isChatInputCommand()) {
+        if (!guild) return interaction.reply({ content: 'Эта команда может быть использована только на сервере.', ephemeral: true });
+        const settings = getSettings(guildId);
+        const { commandName } = interaction;
+        
+        if (commandName === 'play') {
+            const query = interaction.options.getString('query');
+            const voiceChannel = member?.voice?.channel;
+            if (!voiceChannel) {
+                return interaction.reply({ content: '❌ Вы должны находиться в голосовом канале!', ephemeral: true });
+            }
+            
+            await interaction.deferReply();
+            try {
+                // Подключаемся к голосовому каналу и настраиваем слушатель речи
+                await joinChannel(voiceChannel, channel);
+                
+                await playTrack(guildId, voiceChannel, query, member, channel);
+                await interaction.editReply({ content: `🔍 Начат поиск и добавление трека: \`${query}\`` });
+            } catch (e) {
+                console.error(e);
+                await interaction.editReply({ content: `❌ Ошибка: ${e.message}` });
+            }
+        }
+        
+        else if (commandName === 'skip') {
+            const queue = distube.getQueue(guildId);
+            if (!queue) return interaction.reply({ content: '❌ Очередь пуста.', ephemeral: true });
+            try {
+                if (queue.songs.length === 1) queue.stop();
+                else queue.skip();
+                await interaction.reply({ content: '⏭️ Текущий трек пропущен!' });
+            } catch (e) {
+                await interaction.reply({ content: `❌ Ошибка: ${e.message}`, ephemeral: true });
+            }
+        }
+        
+        else if (commandName === 'stop') {
+            const queue = distube.getQueue(guildId);
+            if (!queue) return interaction.reply({ content: '❌ Очередь пуста.', ephemeral: true });
+            try {
+                queue.stop();
+                await interaction.reply({ content: '🛑 Музыка остановлена, очередь очищена!' });
+            } catch (e) {
+                await interaction.reply({ content: `❌ Ошибка: ${e.message}`, ephemeral: true });
+            }
+        }
+        
+        else if (commandName === 'pause') {
+            const queue = distube.getQueue(guildId);
+            if (!queue) return interaction.reply({ content: '❌ Очередь пуста.', ephemeral: true });
+            if (queue.paused) return interaction.reply({ content: '⏸️ Музыка уже на паузе.', ephemeral: true });
+            try {
+                queue.pause();
+                await interaction.reply({ content: '⏸️ Воспроизведение приостановлено.' });
+            } catch (e) {
+                await interaction.reply({ content: `❌ Ошибка: ${e.message}`, ephemeral: true });
+            }
+        }
+        
+        else if (commandName === 'resume') {
+            const queue = distube.getQueue(guildId);
+            if (!queue) return interaction.reply({ content: '❌ Очередь пуста.', ephemeral: true });
+            if (!queue.paused) return interaction.reply({ content: '▶️ Музыка уже играет.', ephemeral: true });
+            try {
+                queue.resume();
+                await interaction.reply({ content: '▶️ Воспроизведение возобновлено.' });
+            } catch (e) {
+                await interaction.reply({ content: `❌ Ошибка: ${e.message}`, ephemeral: true });
+            }
+        }
+        
+        else if (commandName === 'join') {
+            const voiceChannel = member?.voice?.channel;
+            if (!voiceChannel) {
+                return interaction.reply({ content: '❌ Вы должны находиться в голосовом канале!', ephemeral: true });
+            }
+            try {
+                await joinChannel(voiceChannel, channel);
+                await interaction.reply({ content: '✅ Подключилась к голосовому каналу и начала слушать голоса!' });
+            } catch (e) {
+                await interaction.reply({ content: `❌ Ошибка: ${e.message}`, ephemeral: true });
+            }
+        }
+        
+        else if (commandName === 'leave') {
+            try {
+                distube.voices.leave(guild);
+                await interaction.reply({ content: '🔇 Отключилась от голосового канала.' });
+            } catch (e) {
+                await interaction.reply({ content: `❌ Ошибка: ${e.message}`, ephemeral: true });
+            }
+        }
+        
+        else if (commandName === 'settings') {
+            const embed = buildSettingsEmbed(guildId);
+            const row1 = buildSettingsButtons(guildId);
+            const row2 = buildSettingsSelect(guildId);
+            
+            await interaction.reply({
+                embeds: [embed],
+                components: [row2, row1],
+                ephemeral: true
+            });
+        }
+    }
+    
+    else if (interaction.isButton()) {
+        if (!guildId) return;
+        const settings = getSettings(guildId);
+        const { customId } = interaction;
+        
+        if (customId === `toggle_autoplay_${guildId}`) {
+            settings.autoplay = !settings.autoplay;
+            
+            // Также обновляем autoplay в текущей очереди DisTube
+            const queue = distube.getQueue(guildId);
+            if (queue) {
+                queue.autoplay = settings.autoplay;
+            }
+            
+            const embed = buildSettingsEmbed(guildId);
+            const row1 = buildSettingsButtons(guildId);
+            const row2 = buildSettingsSelect(guildId);
+            
+            await interaction.update({
+                embeds: [embed],
+                components: [row2, row1]
+            });
+        }
+        
+        else if (customId === `toggle_debug_${guildId}`) {
+            settings.debugLogs = !settings.debugLogs;
+            
+            const embed = buildSettingsEmbed(guildId);
+            const row1 = buildSettingsButtons(guildId);
+            const row2 = buildSettingsSelect(guildId);
+            
+            await interaction.update({
+                embeds: [embed],
+                components: [row2, row1]
+            });
+        }
+    }
+    
+    else if (interaction.isStringSelectMenu()) {
+        if (!guildId) return;
+        const settings = getSettings(guildId);
+        const { customId, values } = interaction;
+        
+        if (customId === `select_source_${guildId}`) {
+            settings.searchSource = values[0];
+            
+            const embed = buildSettingsEmbed(guildId);
+            const row1 = buildSettingsButtons(guildId);
+            const row2 = buildSettingsSelect(guildId);
+            
+            await interaction.update({
+                embeds: [embed],
+                components: [row2, row1]
+            });
         }
     }
 });
