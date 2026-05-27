@@ -17,15 +17,7 @@ if (dns.setDefaultResultOrder) {
 }
 
 const { Client, GatewayIntentBits, Events } = require('discord.js');
-const { 
-    joinVoiceChannel, 
-    createAudioPlayer, 
-    createAudioResource, 
-    AudioPlayerStatus, 
-    EndBehaviorType,
-    VoiceConnectionStatus,
-    entersState
-} = require('@discordjs/voice');
+const { EndBehaviorType } = require('@discordjs/voice');
 const prism = require('prism-media');
 const { spawn } = require('child_process');
 const { Transform } = require('stream');
@@ -52,10 +44,7 @@ const distube = new DisTube(client, {
     emitNewSongOnly: true
 });
 
-const player = createAudioPlayer();
 let textChannel = null;
-let currentConnection = null;
-let currentPlayingMp3 = null;
 const activeStreams = new Set();
 
 client.on(Events.ClientReady, () => {
@@ -78,74 +67,21 @@ distube.on('error', (channel, error) => {
     if (channel) channel.send(`❌ Возникла ошибка: ${error.message.slice(0, 2000)}`);
 });
 
-function findTextChannel(guild) {
-    const ch = guild.channels.cache.find(ch => 
-        ch.isTextBased() && 
-        ch.permissionsFor(guild.members.me).has('SendMessages')
-    );
-    return ch;
-}
-
-function joinChannel(channel, textChan) {
-    console.log(`[NodeBot] Попытка подключения к "${channel.name}"...`);
+async function joinChannel(channel, textChan) {
+    console.log(`[NodeBot] Попытка подключения к "${channel.name}" через DisTube...`);
     textChannel = textChan;
     
-    if (currentConnection) {
-        try { currentConnection.destroy(); } catch (e) {}
+    // Используем DisTube для подключения, чтобы он управлял соединением
+    const voice = await distube.voices.join(channel);
+    const connection = voice.connection;
+    
+    if (textChannel) {
+        textChannel.send(`✅ **[Алиса]** Я здесь.`);
     }
     
-    const connection = joinVoiceChannel({
-        channelId: channel.id,
-        guildId: channel.guild.id,
-        adapterCreator: channel.guild.voiceAdapterCreator,
-        selfDeaf: false,
-        selfMute: false,
-    });
-    
-    currentConnection = connection;
-    connection.subscribe(player);
-    
-    connection.on(VoiceConnectionStatus.Ready, () => {
-        console.log(`[NodeBot] Подключился к каналу: ${channel.name}`);
-        if (textChannel) {
-            textChannel.send(`✅ **[Алиса]** Я здесь.`);
-        }
-        
-        const welcomeMp3 = path.join(__dirname, 'welcome.mp3');
-        const welcomeText = 'Привет! Я Алиса. Назовите меня и скажите, что включить.';
-        
-        const ttsProcess = spawn('python', [
-            path.join(__dirname, 'tts_helper.py'),
-            welcomeText,
-            welcomeMp3
-        ]);
-        
-        ttsProcess.on('close', (code) => {
-            if (code === 0 && fs.existsSync(welcomeMp3)) {
-                currentPlayingMp3 = welcomeMp3;
-                const resource = createAudioResource(welcomeMp3);
-                player.play(resource);
-            }
-        });
-    });
-    
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
-        try {
-            await Promise.race([
-                entersState(connection, VoiceConnectionStatus.Signalling, 5000),
-                entersState(connection, VoiceConnectionStatus.Connecting, 5000),
-            ]);
-        } catch (error) {
-            try { connection.destroy(); } catch (e) {}
-            if (currentConnection === connection) currentConnection = null;
-        }
-    });
-    
+    // Слушаем речь
     connection.receiver.speaking.on('start', (userId) => {
         if (activeStreams.has(userId)) return;
-        
-        // Don't record if DisTube is currently playing (to avoid listening to its own output or just ignoring commands while music is loud)
-        // Actually, users might want to say "Алиса, стоп". We will listen, but skip if volume issues.
         activeStreams.add(userId);
         
         const user = client.users.cache.get(userId);
@@ -218,7 +154,6 @@ function joinChannel(channel, textChan) {
                                 const guild = client.guilds.cache.get(channel.guild.id);
                                 const member = guild.members.cache.get(userId);
                                 if (member && member.voice.channel) {
-                                    player.stop();
                                     distube.play(member.voice.channel, query, {
                                         member: member,
                                         textChannel: textChannel
@@ -251,7 +186,7 @@ function joinChannel(channel, textChan) {
         });
     });
     
-    return connection;
+    return voice;
 }
 
 client.on(Events.MessageCreate, async message => {
@@ -266,9 +201,6 @@ client.on(Events.MessageCreate, async message => {
         
         const voiceChannel = message.member?.voice?.channel;
         if (!voiceChannel) return message.reply('Вы должны быть в голосовом канале!');
-        
-        // Stop our tts player if it's playing
-        player.stop();
         
         try {
             await distube.play(voiceChannel, query, {
@@ -304,18 +236,7 @@ client.on(Events.MessageCreate, async message => {
         }
     } else if (command === '!leave') {
         distube.voices.leave(message.guild);
-        if (currentConnection) {
-            try { currentConnection.destroy(); } catch (e) {}
-            currentConnection = null;
-        }
         message.reply('Отключилась.');
-    }
-});
-
-player.on(AudioPlayerStatus.Idle, () => {
-    if (currentPlayingMp3) {
-        try { fs.unlinkSync(currentPlayingMp3); } catch (e) {}
-        currentPlayingMp3 = null;
     }
 });
 

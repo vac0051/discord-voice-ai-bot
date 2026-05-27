@@ -12,7 +12,8 @@ def main():
     wav_path = sys.argv[1]
     
     try:
-        from vosk import Model, KaldiRecognizer
+        from vosk import Model, KaldiRecognizer, SetLogLevel
+        SetLogLevel(-1)
     except ImportError:
         print("ERROR: vosk not installed")
         sys.exit(1)
