@@ -480,7 +480,23 @@ async function joinChannel(channel, textChan) {
 client.on(Events.MessageCreate, async message => {
     if (!message.guild || message.author.bot) return;
     
-    const args = message.content.trim().split(/ +/g);
+    const messageContent = message.content.trim();
+    // Автоматически распознаем прямую ссылку на песню (SoundCloud / YouTube) и воспроизводим её
+    if (messageContent.startsWith('http://') || messageContent.startsWith('https://')) {
+        const voiceChannel = message.member?.voice?.channel;
+        if (voiceChannel) {
+            try {
+                await joinChannel(voiceChannel, message.channel);
+                await playTrack(message.guild.id, voiceChannel, messageContent, message.member, message.channel);
+                return;
+            } catch (e) {
+                console.error(`[NodeBot] Direct link playback error:`, e);
+                return message.reply(`❌ Не удалось воспроизвести ссылку: ${e.message}`);
+            }
+        }
+    }
+    
+    const args = messageContent.split(/ +/g);
     const command = args.shift().toLowerCase();
     
     if (command === '!play' || command === '!p') {
