@@ -23,7 +23,7 @@ def main():
             print("ERROR: Audio file must be WAV format mono PCM.")
             sys.exit(1)
             
-        model_path = "/root/botparsecdota2/data/vosk-model-small-ru-0.22"
+        model_path = os.path.join(os.path.dirname(__file__), "model")
         if not os.path.exists(model_path):
             print(f"ERROR: Vosk model not found at {model_path}")
             sys.exit(1)
@@ -61,7 +61,7 @@ def main():
                 
             print(f"TRIGGERED:{prompt}")
             
-            # Проверяем, это запрос на включение музыки или вопрос к ИИ
+            # Проверяем, это запрос на включение музыки
             play_keywords = ["включи музыку", "включи", "поставь", "сыграй"]
             is_music_request = False
             music_query = ""
@@ -75,66 +75,10 @@ def main():
             if is_music_request and music_query:
                 print(f"MUSIC:{music_query}")
                 sys.exit(0)
-                
-            # Если это не музыка, идем в G4F
-            try:
-                import g4f
-                from g4f.client import Client as G4FClient
-                from gtts import gTTS
-            except ImportError as e:
-                print(f"ERROR: missing AI libs: {e}")
-                sys.exit(1)
-                
-            system_prompt = "Ты -- голосовой ИИ-ассистент в Discord. Тебя зовут Алиса. Отвечай кратко (1-3 предложения), по делу. Отвечай на русском языке без markdown."
-            client = G4FClient()
-            
-            def is_valid_reply(text):
-                if not text or not text.strip():
-                    return False
-                t = text.strip()
-                if t.startswith('<!') or t.startswith('<html') or t.startswith('data:') or t.startswith('{'):
-                    return False
-                if '<html' in t.lower() or '<!doctype' in t.lower():
-                    return False
-                return True
-            
-            models_to_try = [g4f.models.gpt_4o_mini, g4f.models.gpt_4o, g4f.models.default]
-            
-            reply = ""
-            for model in models_to_try:
-                if reply:
-                    break
-                for attempt in range(2):
-                    try:
-                        response = client.chat.completions.create(
-                            model=model,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": prompt}
-                            ],
-                            stream=False
-                        )
-                        if hasattr(response, 'choices') and response.choices:
-                            raw = response.choices[0].message.content
-                            if is_valid_reply(raw):
-                                reply = raw.strip()
-                                break
-                            else:
-                                print(f"INVALID_RESPONSE from {model}: {raw[:100]}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"AI_ERROR model={model} attempt={attempt+1}: {e}", file=sys.stderr)
-                    
-            if not reply:
-                reply = "Хм, нейросеть сегодня молчит. Попробуйте ещё раз!"
-                
-            reply = reply.replace("**", "").replace("*", "").replace("`", "").replace("#", "").replace("- ", "")
-            print(f"REPLY:{reply}")
-            
-            output_mp3 = wav_path.replace(".wav", "_reply.mp3")
-            tts = gTTS(text=reply, lang='ru', slow=False)
-            tts.save(output_mp3)
-            
-            print(f"MP3:{output_mp3}")
+            else:
+                # Нейросеть отключена, игнорируем любые другие запросы к Алисе
+                print("IGNORING: Not a music request, and neural network is disabled.")
+                sys.exit(0)
             
     except Exception as e:
         print(f"ERROR: {e}")
