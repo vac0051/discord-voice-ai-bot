@@ -201,7 +201,24 @@ async function registerSlashCommands(token) {
         ].map(command => command.toJSON());
 
         const rest = new REST({ version: '10' }).setToken(token);
-        console.log('[NodeBot] Начало обновления глобальных (/)...');
+        
+        // 1. Сначала регистрируем локально во всех гильдиях для моментального отображения!
+        console.log('[NodeBot] Начало локального обновления (/) команд в гильдиях...');
+        const guilds = await client.guilds.fetch();
+        for (const [guildId, guild] of guilds) {
+            try {
+                await rest.put(
+                    Routes.applicationGuildCommands(clientId, guildId),
+                    { body: commandsList },
+                );
+                console.log(`[NodeBot] Успешно зарегистрированы (/) команды для гильдии: ${guild.name} (${guildId})`);
+            } catch (guildError) {
+                console.error(`[NodeBot Error] Не удалось зарегистрировать команды для гильдии ${guildId}:`, guildError.message);
+            }
+        }
+
+        // 2. Также регистрируем глобально (чтобы работало везде со временем)
+        console.log('[NodeBot] Начало обновления глобальных (/) команд...');
         await rest.put(
             Routes.applicationCommands(clientId),
             { body: commandsList },
