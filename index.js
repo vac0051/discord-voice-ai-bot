@@ -49,10 +49,7 @@ const client = new Client({
 
 const distube = new DisTube(client, {
     plugins: [new SoundCloudPlugin()],
-    emitNewSongOnly: true,
-    leaveOnEmpty: true,
-    leaveOnFinish: false,
-    leaveOnStop: false
+    emitNewSongOnly: true
 });
 
 const player = createAudioPlayer();
@@ -117,7 +114,7 @@ function joinChannel(channel, textChan) {
         const welcomeMp3 = path.join(__dirname, 'welcome.mp3');
         const welcomeText = 'Привет! Я Алиса. Назовите меня и скажите, что включить.';
         
-        const ttsProcess = spawn('/root/botparsecdota2/venv_voice/bin/python', [
+        const ttsProcess = spawn('python', [
             path.join(__dirname, 'tts_helper.py'),
             welcomeText,
             welcomeMp3
@@ -198,7 +195,7 @@ function joinChannel(channel, textChan) {
                 try { fs.unlinkSync(pcmPath); } catch(e){}
                 if (code !== 0 || !fs.existsSync(pcmWavPath)) return;
                 
-                const pythonProcess = spawn('/root/botparsecdota2/venv_voice/bin/python', [
+                const pythonProcess = spawn('python', [
                     path.join(__dirname, 'process_audio.py'),
                     pcmWavPath
                 ]);
