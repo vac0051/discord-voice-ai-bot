@@ -39,9 +39,14 @@ const client = new Client({
     ] 
 });
 
+const ffmpegPath = require('ffmpeg-static');
+
 const distube = new DisTube(client, {
     plugins: [new SoundCloudPlugin()],
-    emitNewSongOnly: true
+    emitNewSongOnly: true,
+    ffmpeg: {
+        path: ffmpegPath
+    }
 });
 
 let textChannel = null;
@@ -56,16 +61,45 @@ distube.on('playSong', (queue, song) => {
     if (textChannel) {
         textChannel.send(`🎵 **Включаю:** \`${song.name}\` - \`${song.formattedDuration}\`\nСсылка: ${song.url}`);
     }
+    // Отключаем selfDeaf при начале проигрывания песни на всякий случай
+    try {
+        const voice = distube.voices.get(queue.textChannel.guild.id);
+        if (voice) {
+            voice.setSelfDeaf(false);
+            console.log(`[NodeBot] PlaySong: Принудительно отключен selfDeaf для постоянного прослушивания`);
+        }
+    } catch (e) {
+        console.error(`[NodeBot] PlaySong: Не удалось отключить selfDeaf:`, e);
+    }
 });
 distube.on('addSong', (queue, song) => {
     if (textChannel) {
         textChannel.send(`✅ **Добавлено в очередь:** \`${song.name}\``);
     }
 });
-distube.on('error', (channel, error) => {
-    console.error('[DisTube Error]', error);
-    if (channel) channel.send(`❌ Возникла ошибка: ${error.message.slice(0, 2000)}`);
+distube.on('initQueue', (queue) => {
+    queue.autoplay = true;
+    console.log(`[NodeBot] Инициализирована очередь, автоплей (рекомендации) ВКЛЮЧЕН по умолчанию`);
 });
+distube.on('error', (error, queue, song) => {
+    console.error('[DisTube Error]', error);
+    const targetChannel = queue?.textChannel || textChannel;
+    if (targetChannel && typeof targetChannel.send === 'function') {
+        const errorMsg = error?.message || String(error);
+        targetChannel.send(`❌ Возникла ошибка: ${errorMsg.slice(0, 2000)}`).catch(console.error);
+    }
+});
+
+function findTextChannel(guild) {
+    let ch = guild.channels.cache.get('1509215578622267444');
+    if (ch) return ch;
+
+    ch = guild.channels.cache.find(ch => 
+        ch.isTextBased() && 
+        ch.permissionsFor(guild.members.me).has('SendMessages')
+    );
+    return ch;
+}
 
 async function joinChannel(channel, textChan) {
     console.log(`[NodeBot] Попытка подключения к "${channel.name}" через DisTube...`);
@@ -73,6 +107,12 @@ async function joinChannel(channel, textChan) {
     
     // Используем DisTube для подключения, чтобы он управлял соединением
     const voice = await distube.voices.join(channel);
+    try {
+        voice.setSelfDeaf(false);
+        console.log(`[NodeBot] Отключен selfDeaf для получения аудио пакетов`);
+    } catch (e) {
+        console.error(`[NodeBot] Не удалось установить selfDeaf в false:`, e);
+    }
     const connection = voice.connection;
     
     if (textChannel) {
@@ -134,7 +174,12 @@ async function joinChannel(channel, textChan) {
                 const pythonProcess = spawn('python', [
                     path.join(__dirname, 'process_audio.py'),
                     pcmWavPath
-                ]);
+                ], {
+                    env: {
+                        ...process.env,
+                        PYTHONIOENCODING: 'utf-8'
+                    }
+                });
             
                 pythonProcess.stdout.on('data', async (data) => {
                     const lines = data.toString().split('\n');
@@ -160,6 +205,64 @@ async function joinChannel(channel, textChan) {
                                     });
                                 }
                             }
+                        } else if (line.startsWith('STOP:')) {
+                            if (debugChannel) await debugChannel.send(`🛑 Получена голосовая команда на выключение музыки`);
+                            try {
+                                const queue = distube.getQueue(channel.guild.id);
+                                if (queue) {
+                                    queue.stop();
+                                    if (textChannel) await textChannel.send(`🛑 **[Алиса]** Музыка выключена по голосовой команде.`);
+                                } else {
+                                    if (textChannel) await textChannel.send(`ℹ️ **[Алиса]** Сейчас ничего не играет.`);
+                                }
+                            } catch (e) {
+                                console.error(`[NodeBot] Ошибка остановки музыки по голосу:`, e);
+                            }
+                        } else if (line.startsWith('PAUSE:')) {
+                            if (debugChannel) await debugChannel.send(`⏸️ Получена голосовая команда на паузу`);
+                            try {
+                                const queue = distube.getQueue(channel.guild.id);
+                                if (queue && !queue.paused) {
+                                    queue.pause();
+                                    if (textChannel) await textChannel.send(`⏸️ **[Алиса]** Музыка поставлена на паузу.`);
+                                }
+                            } catch (e) {
+                                console.error(`[NodeBot] Ошибка паузы по голосу:`, e);
+                            }
+                        } else if (line.startsWith('RESUME:')) {
+                            if (debugChannel) await debugChannel.send(`▶️ Получена голосовая команда на возобновление`);
+                            try {
+                                const queue = distube.getQueue(channel.guild.id);
+                                if (queue && queue.paused) {
+                                    queue.resume();
+                                    if (textChannel) await textChannel.send(`▶️ **[Алиса]** Воспроизведение возобновлено.`);
+                                }
+                            } catch (e) {
+                                console.error(`[NodeBot] Ошибка возобновления по голосу:`, e);
+                            }
+                        } else if (line.startsWith('SKIP:')) {
+                            if (debugChannel) await debugChannel.send(`⏭️ Получена голосовая команда на пропуск трека`);
+                            try {
+                                const queue = distube.getQueue(channel.guild.id);
+                                if (queue) {
+                                    if (queue.songs.length === 1) queue.stop();
+                                    else queue.skip();
+                                    if (textChannel) await textChannel.send(`⏭️ **[Алиса]** Текущий трек пропущен.`);
+                                }
+                            } catch (e) {
+                                console.error(`[NodeBot] Ошибка пропуска по голосу:`, e);
+                            }
+                        } else if (line.startsWith('AUTOPLAY:')) {
+                            if (debugChannel) await debugChannel.send(`📻 Получена голосовая команда на автоплей`);
+                            try {
+                                const queue = distube.getQueue(channel.guild.id);
+                                if (queue) {
+                                    const autoplay = queue.toggleAutoplay();
+                                    if (textChannel) await textChannel.send(`📻 **[Алиса]** Автовоспроизведение рекомендаций теперь **${autoplay ? 'ВКЛЮЧЕНО' : 'ВЫКЛЮЧЕНО'}**.`);
+                                }
+                            } catch (e) {
+                                console.error(`[NodeBot] Ошибка переключения автоплея по голосу:`, e);
+                            }
                         } else if (line.startsWith('IGNORING:')) {
                             if (debugChannel) await debugChannel.send(`🛑 Игнорирую: ${line}`);
                         } else if (line.startsWith('ERROR:')) {
@@ -179,8 +282,12 @@ async function joinChannel(channel, textChan) {
                 });
             });
         });
+        audioStream.on('error', (err) => console.error(`[NodeBot AudioStream Error]`, err.message));
+        filterStream.on('error', (err) => console.error(`[NodeBot FilterStream Error]`, err.message));
+        opusDecoder.on('error', (err) => console.error(`[NodeBot OpusDecoder Error]`, err.message));
         
-        writeStream.on('error', () => {
+        writeStream.on('error', (err) => {
+            console.error(`[NodeBot WriteStream Error]`, err.message);
             activeStreams.delete(userId);
             try { fs.unlinkSync(pcmWavPath); } catch(e){}
         });
@@ -195,14 +302,17 @@ client.on(Events.MessageCreate, async message => {
     const args = message.content.trim().split(/ +/g);
     const command = args.shift().toLowerCase();
     
-    if (command === '!play') {
+    if (command === '!play' || command === '!p') {
         const query = args.join(' ');
-        if (!query) return message.reply('Укажите что искать (например, !play sc:rammstein)');
+        if (!query) return message.reply('Укажите что искать (например, !play Rammstein или !p Rammstein)');
         
         const voiceChannel = message.member?.voice?.channel;
         if (!voiceChannel) return message.reply('Вы должны быть в голосовом канале!');
         
         try {
+            // Подключаемся к голосовому каналу и настраиваем слушатель речи
+            await joinChannel(voiceChannel, message.channel);
+            
             await distube.play(voiceChannel, query, {
                 message,
                 textChannel: message.channel,
@@ -217,7 +327,7 @@ client.on(Events.MessageCreate, async message => {
         if (!queue) return message.reply('Очередь пуста.');
         queue.stop();
         message.reply('Остановлено.');
-    } else if (command === '!skip') {
+    } else if (command === '!skip' || command === '!s') {
         const queue = distube.getQueue(message);
         if (!queue) return message.reply('Очередь пуста.');
         try {
@@ -227,6 +337,23 @@ client.on(Events.MessageCreate, async message => {
         } catch (e) {
             message.reply(`${e}`);
         }
+    } else if (command === '!pause') {
+        const queue = distube.getQueue(message);
+        if (!queue) return message.reply('Очередь пуста.');
+        if (queue.paused) return message.reply('Музыка уже на паузе.');
+        queue.pause();
+        message.reply('Приостановлено.');
+    } else if (command === '!resume' || command === '!unpause') {
+        const queue = distube.getQueue(message);
+        if (!queue) return message.reply('Очередь пуста.');
+        if (!queue.paused) return message.reply('Музыка уже играет.');
+        queue.resume();
+        message.reply('Возобновлено.');
+    } else if (command === '!autoplay' || command === '!ap') {
+        const queue = distube.getQueue(message);
+        if (!queue) return message.reply('Очередь пуста.');
+        const autoplay = queue.toggleAutoplay();
+        message.reply(`Рекомендации (автовоспроизведение) теперь: **${autoplay ? 'ВКЛЮЧЕНЫ' : 'ВЫКЛЮЧЕНЫ'}**.`);
     } else if (command === '!join') {
         const voiceChannel = message.member?.voice?.channel;
         if (voiceChannel) {
@@ -237,6 +364,81 @@ client.on(Events.MessageCreate, async message => {
     } else if (command === '!leave') {
         distube.voices.leave(message.guild);
         message.reply('Отключилась.');
+    }
+});
+
+// Auto-join and Auto-leave events
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+    const member = newState.member;
+    if (!member) return;
+    
+    // Игнорируем самого себя
+    if (member.id === client.user.id) {
+        return;
+    }
+    
+    // Игнорируем других ботов
+    if (member.user.bot) return;
+    
+    const oldChannel = oldState.channel;
+    const newChannel = newState.channel;
+    
+    // --- Юзер зашел в голосовой канал ---
+    if (newChannel && !oldChannel) {
+        // Если бот еще не подключен в этой гильдии
+        const voice = distube.voices.get(newState.guild.id);
+        if (!voice) {
+            const realMembers = newChannel.members.filter(m => !m.user.bot);
+            if (realMembers.size >= 1) {
+                console.log(`[NodeBot] Пользователь ${member.user.username} вошел в ${newChannel.name}, автоподключение...`);
+                const txtChan = findTextChannel(newChannel.guild);
+                joinChannel(newChannel, txtChan);
+            }
+        }
+    }
+    
+    // --- Юзер перешел в другой канал ---
+    else if (newChannel && oldChannel && newChannel.id !== oldChannel.id) {
+        const voice = distube.voices.get(newState.guild.id);
+        if (voice) {
+            const botChannel = voice.connection.joinConfig.channelId;
+            if (oldChannel.id === botChannel) {
+                // Если бот был в старом канале и там не осталось людей (кроме ботов)
+                const realInOld = oldChannel.members.filter(m => !m.user.bot);
+                if (realInOld.size === 0) {
+                    console.log(`[NodeBot] В старом канале ${oldChannel.name} не осталось людей. Переходим за ${member.user.username} в ${newChannel.name}...`);
+                    const txtChan = findTextChannel(newChannel.guild);
+                    
+                    try {
+                        distube.voices.leave(newState.guild);
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        joinChannel(newChannel, txtChan);
+                    } catch (e) {
+                        console.error('[NodeBot] Ошибка при смене канала:', e);
+                    }
+                }
+            }
+        }
+    }
+    
+    // --- Юзер вышел из голосового канала ---
+    else if (!newChannel && oldChannel) {
+        const voice = distube.voices.get(newState.guild.id);
+        if (voice) {
+            const botChannel = voice.connection.joinConfig.channelId;
+            if (oldChannel.id === botChannel) {
+                // Проверяем, остались ли люди
+                const realRemaining = oldChannel.members.filter(m => !m.user.bot);
+                if (realRemaining.size === 0) {
+                    console.log(`[NodeBot] В канале ${oldChannel.name} не осталось людей. Отключаемся...`);
+                    try {
+                        distube.voices.leave(newState.guild);
+                    } catch (e) {
+                        console.error('[NodeBot] Ошибка при отключении:', e);
+                    }
+                }
+            }
+        }
     }
 });
 

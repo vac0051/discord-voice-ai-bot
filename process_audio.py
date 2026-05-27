@@ -4,6 +4,12 @@ import wave
 import json
 import traceback
 
+# Force UTF-8 stdout and stderr encoding on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python process_audio.py <path_to_wav>")
@@ -52,33 +58,92 @@ def main():
         
         # Проверяем триггер Алиса
         trigger = "алиса"
-        if trigger in text.lower() and len(text) > len(trigger):
-            idx = text.lower().find(trigger)
-            prompt = text[idx + len(trigger):].strip()
-            
-            if not prompt:
-                print("IGNORING: Empty prompt after trigger")
+        if trigger in text.lower():
+            # 1. Проверяем голосовую команду на паузу
+            pause_keywords = ["пауза", "поставь на паузу", "приостанови"]
+            is_pause_request = False
+            for keyword in pause_keywords:
+                if keyword in text.lower():
+                    is_pause_request = True
+                    break
+            if is_pause_request:
+                print("PAUSE:true")
                 sys.exit(0)
                 
-            print(f"TRIGGERED:{prompt}")
-            
-            # Проверяем, это запрос на включение музыки
-            play_keywords = ["включи музыку", "включи", "поставь", "сыграй"]
+            # 2. Проверяем голосовую команду на возобновление (снятие с паузы)
+            resume_keywords = ["продолжи", "продолжить", "сними с паузы", "играй", "запусти"]
+            is_resume_request = False
+            for keyword in resume_keywords:
+                if keyword in text.lower():
+                    is_resume_request = True
+                    break
+            if is_resume_request:
+                print("RESUME:true")
+                sys.exit(0)
+                
+            # 3. Проверяем голосовую команду на пропуск трека (скип)
+            skip_keywords = ["пропусти", "пропустить", "скип", "скипни", "дальше", "следующий", "следующая"]
+            is_skip_request = False
+            for keyword in skip_keywords:
+                if keyword in text.lower():
+                    is_skip_request = True
+                    break
+            if is_skip_request:
+                print("SKIP:true")
+                sys.exit(0)
+
+            # 4. Проверяем голосовую команду на автоплей (рекомендации)
+            autoplay_keywords = ["включи рекомендации", "рекомендации", "автоплей", "автовоспроизведение"]
+            is_autoplay_request = False
+            for keyword in autoplay_keywords:
+                if keyword in text.lower():
+                    is_autoplay_request = True
+                    break
+            if is_autoplay_request:
+                print("AUTOPLAY:true")
+                sys.exit(0)
+
+            # 5. Проверяем, это запрос на выключение/остановку музыки полностью
+            stop_keywords = ["выключи музыку", "выключи песню", "останови музыку", "выключить музыку", "выключи", "стоп", "останови", "хватит"]
+            is_stop_request = False
+            for keyword in stop_keywords:
+                if keyword in text.lower():
+                    is_stop_request = True
+                    break
+            if is_stop_request:
+                print("STOP:true")
+                sys.exit(0)
+                
+            # 5. Проверяем, это запрос на включение музыки
+            play_keywords = ["включи музыку", "включить музыку", "включи песню", "поставь песню", "включи", "поставь", "сыграй"]
             is_music_request = False
             music_query = ""
             
             for keyword in play_keywords:
-                if prompt.lower().startswith(keyword):
-                    is_music_request = True
-                    music_query = prompt[len(keyword):].strip()
-                    break
+                if keyword in text.lower():
+                    # Находим, где этот keyword в тексте, и берем все, что после него
+                    idx = text.lower().find(keyword)
+                    query_candidate = text[idx + len(keyword):].strip()
+                    # Убираем слово "алиса" из поискового запроса, если оно оказалось в конце (например, "включи rammstein алиса")
+                    query_candidate_lower = query_candidate.lower()
+                    if trigger in query_candidate_lower:
+                        trigger_idx = query_candidate_lower.find(trigger)
+                        query_candidate = (query_candidate[:trigger_idx] + query_candidate[trigger_idx + len(trigger):]).strip()
                     
+                    # Очищаем от знаков препинания в начале/конце
+                    query_candidate = query_candidate.strip(",.?! ")
+                    
+                    if query_candidate:
+                        is_music_request = True
+                        music_query = query_candidate
+                        break
+            
             if is_music_request and music_query:
                 print(f"MUSIC:{music_query}")
                 sys.exit(0)
             else:
-                # Нейросеть отключена, игнорируем любые другие запросы к Алисе
-                print("IGNORING: Not a music request, and neural network is disabled.")
+                # Если ничего из этого не подошло, но триггер был обнаружен
+                print("IGNORING: Empty prompt or unknown command after trigger")
                 sys.exit(0)
             
     except Exception as e:
