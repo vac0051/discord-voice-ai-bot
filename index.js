@@ -123,13 +123,30 @@ function buildSettingsSelect(guildId) {
     return new ActionRowBuilder().addComponents(select);
 }
 
+// Robust URL extractor that handles leading/trailing spaces, brackets <...> or text around it
+function extractUrl(text) {
+    if (!text) return null;
+    let trimmed = text.trim();
+    // Support URLs wrapped in <...> used by Discord to suppress embeds
+    if (trimmed.startsWith('<') && trimmed.endsWith('>')) {
+        trimmed = trimmed.slice(1, -1).trim();
+    }
+    const urlRegex = /(https?:\/\/[^\s<>]+)/;
+    const match = trimmed.match(urlRegex);
+    if (match) {
+        return match[1];
+    }
+    return null;
+}
+
 // Unified play helper to handle SoundCloud and YouTube searches
 async function playTrack(guildId, voiceChannel, query, member, textChan) {
     const settings = getSettings(guildId);
-    const isUrl = query.startsWith('http://') || query.startsWith('https://');
+    const url = extractUrl(query);
     
-    if (isUrl) {
-        return distube.play(voiceChannel, query, {
+    if (url) {
+        if (textChan) textChan.send(`🎵 **[Алиса]** Воспроизвожу по прямой ссылке: ${url}`);
+        return distube.play(voiceChannel, url, {
             member: member,
             textChannel: textChan
         });
@@ -482,16 +499,21 @@ client.on(Events.MessageCreate, async message => {
     
     const messageContent = message.content.trim();
     // Автоматически распознаем прямую ссылку на песню (SoundCloud / YouTube) и воспроизводим её
-    if (messageContent.startsWith('http://') || messageContent.startsWith('https://')) {
-        const voiceChannel = message.member?.voice?.channel;
-        if (voiceChannel) {
-            try {
-                await joinChannel(voiceChannel, message.channel);
-                await playTrack(message.guild.id, voiceChannel, messageContent, message.member, message.channel);
-                return;
-            } catch (e) {
-                console.error(`[NodeBot] Direct link playback error:`, e);
-                return message.reply(`❌ Не удалось воспроизвести ссылку: ${e.message}`);
+    const possibleUrl = extractUrl(messageContent);
+    if (possibleUrl) {
+        // Убедимся, что сообщение не содержит другого текста (то есть это чистая ссылка с точностью до <...>)
+        const cleaned = messageContent.replace(/^[<\s]+|[>\s]+$/g, '');
+        if (cleaned === possibleUrl) {
+            const voiceChannel = message.member?.voice?.channel;
+            if (voiceChannel) {
+                try {
+                    await joinChannel(voiceChannel, message.channel);
+                    await playTrack(message.guild.id, voiceChannel, possibleUrl, message.member, message.channel);
+                    return;
+                } catch (e) {
+                    console.error(`[NodeBot] Direct link playback error:`, e);
+                    return message.reply(`❌ Не удалось воспроизвести ссылку: ${e.message}`);
+                }
             }
         }
     }
