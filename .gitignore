@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.pcm
+*.wav
+*.mp3
+__pycache__/
+*.log
