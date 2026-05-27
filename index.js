@@ -108,7 +108,7 @@ function joinChannel(channel, textChan) {
     connection.on(VoiceConnectionStatus.Ready, () => {
         console.log(`[NodeBot] Подключился к каналу: ${channel.name}`);
         if (textChannel) {
-            textChannel.send(`✅ **[Алиса]** Я здесь. Готова включать музыку или общаться (триггер: \`Алиса\`).\nМожно сказать "Алиса, включи музыку Rammstein".`);
+            textChannel.send(`✅ **[Алиса]** Я здесь.`);
         }
         
         const welcomeMp3 = path.join(__dirname, 'welcome.mp3');
